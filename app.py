@@ -80,54 +80,51 @@ with st.sidebar:
     # 1. 차량 선택
     st.subheader("1️⃣ 차량 선택")
 
-    # 브랜드 필터
+    # 1-1. 브랜드 선택
     brands = vehicle_master.get_brands()
     selected_brand = st.selectbox(
         "브랜드",
-        options=["전체"] + brands,
+        options=brands,
         key="brand"
     )
 
-    # 차량 목록
-    if selected_brand == "전체":
-        vehicle_list = vehicle_master.get_vehicle_list()
-    else:
-        vehicle_list = vehicle_master.get_vehicle_list(brand=selected_brand)
+    # 1-2. 기본 모델 선택
+    models = vehicle_master.get_models_by_brand(selected_brand)
 
-    # 가격 범위 필터
-    if vehicle_list:
-        min_price = min(v["price"] for v in vehicle_list)
-        max_price = max(v["price"] for v in vehicle_list)
-
-        price_range = st.slider(
-            "가격 범위 (만원)",
-            min_value=int(min_price/10000),
-            max_value=int(max_price/10000),
-            value=(int(min_price/10000), int(max_price/10000)),
-            key="price_range"
-        )
-
-        # 가격 필터 적용
-        vehicle_list = [
-            v for v in vehicle_list
-            if price_range[0] * 10000 <= v["price"] <= price_range[1] * 10000
-        ]
-
-    # 차량 선택
-    if vehicle_list:
-        vehicle_options = {v["display"]: v["id"] for v in vehicle_list}
-        selected_vehicle_name = st.selectbox(
-            "차량을 선택하세요",
-            options=list(vehicle_options.keys()),
-            key="vehicle"
-        )
-        selected_vehicle_id = vehicle_options[selected_vehicle_name]
-        vehicle = vehicle_master.get_vehicle(selected_vehicle_id)
-
-        st.info(f"💰 차량가: {vehicle['price']:,}원")
-    else:
-        st.warning("⚠ 선택 가능한 차량이 없습니다")
+    if not models:
+        st.warning(f"⚠ {selected_brand}의 모델이 없습니다")
         st.stop()
+
+    selected_model = st.selectbox(
+        "기본 모델",
+        options=models,
+        key="model"
+    )
+
+    # 1-3. 세부 트림 선택
+    trims = vehicle_master.get_trims_by_brand_model(selected_brand, selected_model)
+
+    if not trims:
+        st.warning(f"⚠ {selected_brand} {selected_model}의 트림이 없습니다")
+        st.stop()
+
+    # 트림 선택 (가격 정보 포함)
+    trim_options = {
+        f"{t['trim']} ({t['price']:,}원)": t['id']
+        for t in trims
+    }
+
+    selected_trim_display = st.selectbox(
+        "세부 트림",
+        options=list(trim_options.keys()),
+        key="trim"
+    )
+
+    selected_vehicle_id = trim_options[selected_trim_display]
+    vehicle = vehicle_master.get_vehicle(selected_vehicle_id)
+
+    st.info(f"💰 선택한 차량: {vehicle['display_name']}")
+    st.caption(f"   차량가: {vehicle['price']:,}원")
 
     # 2. 계약 조건
     st.subheader("2️⃣ 계약 조건")
@@ -214,20 +211,28 @@ if calculate_button:
             # 자동차세 계산
             annual_car_tax = calculate_auto_tax(
                 engine_cc=vehicle['engine_cc'],
-                is_commercial=True
+                is_commercial=False  # 개인
             )
 
             # 리스료 계산
+            # 과세표준 방식 (메리츠 엑셀과 동일)
+            taxable_base = vehicle['price'] / 1.1  # VAT 제외
+            acquisition_tax_rate = 0.07  # 개인 7%
+            acquisition_tax = taxable_base * acquisition_tax_rate
+            registration_fee = 100_000  # 등록비
+            acquisition_cost_total = vehicle['price'] + acquisition_tax + registration_fee
+
             result = calculate_operating_lease(
                 vehicle_price=vehicle['price'],
                 contract_months=contract_months,
                 down_payment=down_payment,
                 residual_rate=residual_rate,
                 annual_rate=annual_rate,
-                acquisition_tax_rate=0.0,  # 영업용 면제
-                registration_fee=200_000,
+                acquisition_tax_rate=0.0,  # 취득세는 이미 취득원가에 포함됨
+                registration_fee=registration_fee,
                 annual_car_tax=annual_car_tax,
-                method='simple'
+                method='simple',
+                acquisition_cost=acquisition_cost_total  # 하이브리드 방식
             )
 
         except ValidationError as e:
@@ -237,157 +242,264 @@ if calculate_button:
             st.error(f"❌ 계산 오류: {str(e)}")
             st.stop()
 
-    # 결과 표시
-    st.success("✅ 계산 완료!")
-
-    # 주요 결과
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric(
-            label="💰 월 리스료",
-            value=f"{result['monthly_total']:,.0f}원"
-        )
-
-    with col2:
-        st.metric(
-            label="📊 잔존가치",
-            value=f"{result['residual_value']:,.0f}원",
-            delta=f"{residual_rate:.1%}"
-        )
-
-    with col3:
-        st.metric(
-            label="📈 적용 금리",
-            value=f"{result['applied_rate']:.2%}"
-        )
-
-    with col4:
-        st.metric(
-            label="💵 총 납부액",
-            value=f"{result['total_payment']:,.0f}원"
-        )
+    # ========================================
+    # 견적서 스타일 결과 표시
+    # ========================================
 
     st.markdown("---")
+    st.markdown("### 📋 운용리스 견적서")
 
-    # 상세 내역
-    col1, col2 = st.columns(2)
+    # 1. 차량 및 계약 정보
+    st.markdown("#### 1️⃣ 차량 정보")
+    info_col1, info_col2 = st.columns(2)
 
-    with col1:
-        st.subheader("📋 월 리스료 상세")
+    with info_col1:
+        st.markdown(f"""
+        **차량명:** {vehicle['display_name']}
+        **차량가격:** {vehicle['price']:,}원
+        **배기량:** {vehicle['engine_cc']:,}cc
+        **유종:** {vehicle['fuel_type']}
+        """)
 
-        breakdown = [
-            ("감가상각비", result['monthly_depreciation']),
-            ("금융비용", result['monthly_finance']),
-            ("등록비", result['monthly_registration']),
-            ("자동차세", result['monthly_car_tax']),
-        ]
+    with info_col2:
+        st.markdown(f"""
+        **캐피탈:** {capital_display.get(selected_capital, selected_capital)}
+        **계약기간:** {contract_months}개월
+        **연간주행거리:** {annual_mileage:,}km
+        **잔가옵션:** {grade_option}
+        """)
 
-        for label, value in breakdown:
-            st.write(f"**{label}:** {value:,.0f}원")
-
-        st.write("---")
-        st.write(f"**합계:** {result['monthly_total']:,.0f}원")
-
-    with col2:
-        st.subheader("📊 총 비용 분석")
-
-        summary = [
-            ("총 납부액", result['total_payment']),
-            ("총 이자", result['total_interest']),
-            ("잔존가치", result['residual_value']),
-            ("실차량비용", result['effective_vehicle_cost']),
-        ]
-
-        for label, value in summary:
-            st.write(f"**{label}:** {value:,.0f}원")
-
-    # 조건별 비교
+    # 2. 상세 계산 과정
     st.markdown("---")
-    st.subheader("🔍 조건별 비교")
+    st.markdown("#### 2️⃣ 상세 계산 과정")
 
-    tab1, tab2 = st.tabs(["기간별 비교", "주행거리별 비교"])
+    calc_col1, calc_col2 = st.columns(2)
 
-    with tab1:
-        st.write(f"**주행거리:** {annual_mileage:,}km/년")
+    with calc_col1:
+        st.markdown("**📌 취득 원가 계산**")
+        taxable_base_display = taxable_base
+        acquisition_tax_amount = acquisition_tax
+        acquisition_cost_display = vehicle['price'] + acquisition_tax_amount + 100_000
+        financed_amount = acquisition_cost_display - down_payment
 
-        comparison_data = []
-        for period in [24, 36, 48, 60]:
-            try:
-                temp_rate = residual_rates.get_residual_rate(
-                    selected_capital, selected_vehicle_id, period, annual_mileage,
-                    grade_option=grade_option
-                )
-                temp_annual_rate = interest_rates.get_interest_rate(
-                    capital_id=selected_capital,
-                    vehicle_price=vehicle['price'],
-                    brand=vehicle['brand'],
-                    is_import=vehicle['is_import'],
-                    is_ev=(vehicle['engine_cc'] == 0),
-                    contract_months=period
-                )
-                temp_result = calculate_operating_lease(
-                    vehicle_price=vehicle['price'],
-                    contract_months=period,
-                    down_payment=down_payment,
-                    residual_rate=temp_rate,
-                    annual_rate=temp_annual_rate,
-                    acquisition_tax_rate=0.0,
-                    registration_fee=200_000,
-                    annual_car_tax=annual_car_tax,
-                    method='simple'
-                )
-                comparison_data.append({
-                    "기간": f"{period}개월",
-                    "월 리스료": f"{temp_result['monthly_total']:,.0f}원",
-                    "잔존율": f"{temp_rate:.1%}",
-                    "총 납부액": f"{temp_result['total_payment']:,.0f}원"
-                })
-            except:
-                pass
+        st.markdown(f"""
+        ```
+        차량가격:           {vehicle['price']:>15,}원
+        과세표준:           {taxable_base_display:>15,.0f}원  (차량가 ÷ 1.1)
+        취득세 (7%):        {acquisition_tax_amount:>15,.0f}원  (과세표준 × 0.07)
+        등록비:             {100_000:>15,}원
+        ───────────────────────────────────
+        취득원가:           {acquisition_cost_display:>15,.0f}원
+        (-) 선납금:         {down_payment:>15,.0f}원
+        ───────────────────────────────────
+        금융대상금액:       {financed_amount:>15,.0f}원
+        ```
+        """)
 
-        if comparison_data:
-            st.table(comparison_data)
+        st.markdown("**📌 감가상각 계산**")
+        total_depreciation = financed_amount - result['residual_value']
 
-    with tab2:
-        st.write(f"**계약 기간:** {contract_months}개월")
+        st.markdown(f"""
+        ```
+        차량가격:           {vehicle['price']:>15,}원
+        잔존율 ({residual_rate:.1%}):    {residual_rate:>15.1%}
+        ───────────────────────────────────
+        잔존가치:           {result['residual_value']:>15,.0f}원
 
-        comparison_data = []
-        for mileage in [10000, 15000, 20000, 30000]:
-            try:
-                temp_rate = residual_rates.get_residual_rate(
-                    selected_capital, selected_vehicle_id, contract_months, mileage,
-                    grade_option=grade_option
-                )
-                temp_result = calculate_operating_lease(
-                    vehicle_price=vehicle['price'],
-                    contract_months=contract_months,
-                    down_payment=down_payment,
-                    residual_rate=temp_rate,
-                    annual_rate=annual_rate,
-                    acquisition_tax_rate=0.0,
-                    registration_fee=200_000,
-                    annual_car_tax=annual_car_tax,
-                    method='simple'
-                )
-                comparison_data.append({
-                    "주행거리": f"{mileage:,}km",
-                    "월 리스료": f"{temp_result['monthly_total']:,.0f}원",
-                    "잔존율": f"{temp_rate:.1%}",
-                    "총 납부액": f"{temp_result['total_payment']:,.0f}원"
-                })
-            except:
-                pass
+        금융대상:           {financed_amount:>15,.0f}원
+        (-) 잔존가치:       {result['residual_value']:>15,.0f}원
+        ───────────────────────────────────
+        총 감가상각:        {total_depreciation:>15,.0f}원
+        ÷ {contract_months}개월
+        ───────────────────────────────────
+        월 감가상각비:      {result['monthly_depreciation']:>15,.0f}원
+        ```
+        """)
 
-        if comparison_data:
-            st.table(comparison_data)
+    with calc_col2:
+        st.markdown("**📌 금융비용 계산**")
+        monthly_interest_rate = annual_rate / 12
+        st.markdown(f"""
+        ```
+        금융대상금액:       {financed_amount:>15,.0f}원
+        연 이자율:          {annual_rate:>15.2%}
+        월 이자율:          {monthly_interest_rate:>15.4%}
+
+        평균잔액법 적용
+        ───────────────────────────────────
+        월 금융비용:        {result['monthly_finance']:>15,.0f}원
+        총 금융비용:        {result['total_interest']:>15,.0f}원
+        ```
+        """)
+
+        st.markdown("**📌 부대비용 계산**")
+        st.markdown(f"""
+        ```
+        등록비 (월할):      {result['monthly_registration']:>15,.0f}원
+          = {100_000:,}원 ÷ {contract_months}개월
+
+        자동차세 (월할):    {result['monthly_car_tax']:>15,.0f}원
+          = {annual_car_tax:,}원 ÷ 12개월
+        ```
+        """)
+
+    # 3. 월 납입료 총계
+    st.markdown("---")
+    st.markdown("#### 3️⃣ 월 납입료")
+
+    st.markdown(f"""
+    <div style='background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #4CAF50;'>
+        <table style='width: 100%; font-size: 16px;'>
+            <tr>
+                <td><b>감가상각비</b></td>
+                <td style='text-align: right;'>{result['monthly_depreciation']:>15,}원</td>
+            </tr>
+            <tr>
+                <td><b>금융비용</b></td>
+                <td style='text-align: right;'>{result['monthly_finance']:>15,}원</td>
+            </tr>
+            <tr>
+                <td><b>취득세 (월할)</b></td>
+                <td style='text-align: right;'>{result['monthly_tax']:>15,}원</td>
+            </tr>
+            <tr>
+                <td><b>등록비 (월할)</b></td>
+                <td style='text-align: right;'>{result['monthly_registration']:>15,}원</td>
+            </tr>
+            <tr>
+                <td><b>자동차세 (월할)</b></td>
+                <td style='text-align: right;'>{result['monthly_car_tax']:>15,}원</td>
+            </tr>
+            <tr style='border-top: 2px solid #333; font-size: 20px;'>
+                <td><b>💰 월 납입료 합계</b></td>
+                <td style='text-align: right; color: #4CAF50;'><b>{result['monthly_total']:>15,}원</b></td>
+            </tr>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # 4. 총 비용 요약
+    st.markdown("---")
+    st.markdown("#### 4️⃣ 총 비용 요약")
+
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+
+    with summary_col1:
+        st.metric("📅 총 납부액", f"{result['total_payment']:,}원",
+                  help=f"월 {result['monthly_total']:,}원 × {contract_months}개월")
+
+    with summary_col2:
+        st.metric("💸 총 이자", f"{result['total_interest']:,}원",
+                  help="전체 계약기간 동안 발생하는 금융비용")
+
+    with summary_col3:
+        st.metric("🚗 잔존가치", f"{result['residual_value']:,}원",
+                  delta=f"{residual_rate:.1%}",
+                  help="계약 종료 시 차량 잔존가치")
+
+    with summary_col4:
+        st.metric("💵 실차량비용", f"{result['effective_vehicle_cost']:,}원",
+                  help="총 납부액 - 잔존가치 = 실제 차량 사용 비용")
+
+    # 5. 조건별 비교 (탭 없이 한번에 표시)
+    st.markdown("---")
+    st.markdown("#### 5️⃣ 조건별 비교")
+
+    # 5-1. 기간별 비교
+    st.markdown("**📊 기간별 비교** (주행거리: {:,}km/년)".format(annual_mileage))
+
+    period_comparison = []
+    for period in [24, 36, 48, 60]:
+        try:
+            temp_rate = residual_rates.get_residual_rate(
+                selected_capital, selected_vehicle_id, period, annual_mileage,
+                grade_option=grade_option
+            )
+            temp_annual_rate = interest_rates.get_interest_rate(
+                capital_id=selected_capital,
+                vehicle_price=vehicle['price'],
+                brand=vehicle['brand'],
+                is_import=vehicle['is_import'],
+                is_ev=(vehicle['engine_cc'] == 0),
+                contract_months=period
+            )
+            temp_result = calculate_operating_lease(
+                vehicle_price=vehicle['price'],
+                contract_months=period,
+                down_payment=down_payment,
+                residual_rate=temp_rate,
+                annual_rate=temp_annual_rate,
+                acquisition_tax_rate=0.0,  # 취득세는 이미 취득원가에 포함됨
+                registration_fee=100_000,
+                annual_car_tax=annual_car_tax,
+                method='simple',
+                acquisition_cost=acquisition_cost_total
+            )
+
+            # 현재 선택된 기간 표시
+            period_mark = " ⭐" if period == contract_months else ""
+
+            period_comparison.append({
+                "계약기간": f"{period}개월{period_mark}",
+                "잔존율": f"{temp_rate:.1%}",
+                "월 리스료": f"{temp_result['monthly_total']:,}원",
+                "총 납부액": f"{temp_result['total_payment']:,}원",
+                "총 이자": f"{temp_result['total_interest']:,}원"
+            })
+        except:
+            pass
+
+    if period_comparison:
+        st.table(period_comparison)
+
+    st.markdown("")  # 간격
+
+    # 5-2. 주행거리별 비교
+    st.markdown("**🚗 주행거리별 비교** (계약기간: {}개월)".format(contract_months))
+
+    mileage_comparison = []
+    for mileage in [10000, 15000, 20000, 30000]:
+        try:
+            temp_rate = residual_rates.get_residual_rate(
+                selected_capital, selected_vehicle_id, contract_months, mileage,
+                grade_option=grade_option
+            )
+            temp_result = calculate_operating_lease(
+                vehicle_price=vehicle['price'],
+                contract_months=contract_months,
+                down_payment=down_payment,
+                residual_rate=temp_rate,
+                annual_rate=annual_rate,
+                acquisition_tax_rate=0.0,  # 취득세는 이미 취득원가에 포함됨
+                registration_fee=100_000,
+                annual_car_tax=annual_car_tax,
+                method='simple',
+                acquisition_cost=acquisition_cost_total
+            )
+
+            # 현재 선택된 주행거리 표시
+            mileage_mark = " ⭐" if mileage == annual_mileage else ""
+
+            mileage_comparison.append({
+                "연간주행거리": f"{mileage:,}km{mileage_mark}",
+                "잔존율": f"{temp_rate:.1%}",
+                "월 리스료": f"{temp_result['monthly_total']:,}원",
+                "총 납부액": f"{temp_result['total_payment']:,}원",
+                "총 이자": f"{temp_result['total_interest']:,}원"
+            })
+        except:
+            pass
+
+    if mileage_comparison:
+        st.table(mileage_comparison)
 
     # 참고사항
     st.markdown("---")
     st.info(f"""
     ℹ️ **참고사항**
     - 캐피탈: {capital_display.get(selected_capital, selected_capital)}
-    - 본 계산기는 영업용 등록 기준입니다 (취득세 면제)
+    - 본 계산기는 개인 등록 기준입니다 (취득세 7%, 과세표준 방식)
+    - 과세표준 = 차량가 ÷ 1.1 (VAT 제외)
     - 보험료는 별도이며, 고객님께서 직접 가입하셔야 합니다
     - 실제 리스료는 신용도, 프로모션 등에 따라 달라질 수 있습니다
     - 계산 방식: 정액법 (감가상각 균등 분할)

@@ -104,6 +104,56 @@ def get_brands() -> List[str]:
     return sorted(list(brands))
 
 
+def get_models_by_brand(brand: str) -> List[str]:
+    """
+    브랜드별 기본 모델 목록 조회
+
+    Args:
+        brand: 브랜드명 (예: "BMW", "Audi")
+
+    Returns:
+        List[str]: 모델 목록 (중복 제거, 정렬)
+    """
+    vehicles = _load_vehicles()
+    models = set()
+
+    for vehicle_data in vehicles.values():
+        if vehicle_data["brand"] == brand:
+            models.add(vehicle_data["model"])
+
+    return sorted(list(models))
+
+
+def get_trims_by_brand_model(brand: str, model: str) -> List[Dict]:
+    """
+    브랜드와 모델로 세부 트림 목록 조회
+
+    Args:
+        brand: 브랜드명
+        model: 모델명
+
+    Returns:
+        List[Dict]: 트림 목록 [{"id": ..., "trim": ..., "price": ...}, ...]
+    """
+    vehicles = _load_vehicles()
+    result = []
+
+    for vehicle_id, vehicle_data in vehicles.items():
+        if (vehicle_data["brand"] == brand and
+            vehicle_data["model"] == model):
+            result.append({
+                "id": vehicle_id,
+                "trim": vehicle_data["trim"],
+                "display": vehicle_data["display_name"],
+                "price": vehicle_data["price"]
+            })
+
+    # 가격 순으로 정렬
+    result.sort(key=lambda x: x["price"])
+
+    return result
+
+
 def search_vehicles(keyword: str, limit: int = 20) -> List[Dict]:
     """
     키워드로 차량 검색
