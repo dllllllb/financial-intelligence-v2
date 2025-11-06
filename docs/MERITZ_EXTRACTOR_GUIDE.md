@@ -47,6 +47,8 @@
   K (11) : AJ 등급 ⚠️
   L (12) : APS 등급 ⚠️
   M (13) : VGS 등급 ⚠️
+  P (16) : 고잔가추가 15,000 (장기 계약 프리미엄) ⭐
+  Q (17) : 고잔가추가1 10,000 (장기 계약 프리미엄) ⭐
   ```
 
 **⚠️ 중요**: openpyxl의 `cell(row, col)`은 1-based 인덱싱이지만, `iter_rows(values_only=True)[0]`의 배열 인덱스는 0-based입니다!
@@ -63,6 +65,8 @@ west_grade = row_data[9]   # 컬럼 J = 배열 인덱스 9  ✅
 aj_grade = row_data[10]    # 컬럼 K = 배열 인덱스 10 ✅
 aps_grade = row_data[11]   # 컬럼 L = 배열 인덱스 11 ✅
 vgs_grade = row_data[12]   # 컬럼 M = 배열 인덱스 12 ✅
+premium_add_15k = row_data[15]  # 컬럼 P = 배열 인덱스 15 ✅
+premium_add_10k = row_data[16]  # 컬럼 Q = 배열 인덱스 16 ✅
 ```
 
 **❌ 흔한 실수**:
@@ -227,19 +231,21 @@ vgs_grade = row_data[12]   # 컬럼 M (13번째) = 배열 인덱스 12
 **원인**:
 - 메리츠 엑셀은 "일반잔가"와 "고잔가(최대잔가)" 2가지 옵션 제공
 - 고잔가 = 일반잔가 + 보정율
-  - APS/AJ: +8%p
+  - APS/AJ: +8%p (36개월 기준)
   - VGS: +6%p
 - 초기 구현에서 일반잔가만 추출
 
 **해결**:
 ```python
-def _apply_premium_adjustment(self, normal_data: Dict, premium_rate: float) -> Dict:
+def _apply_premium_adjustment(self, normal_data: Dict, premium_rate: float,
+                             long_term_premium: float = 0.0) -> Dict:
     """
     일반잔가에 고잔가 보정 적용
 
     Args:
         normal_data: 일반잔가 데이터
-        premium_rate: 보정율 (0.08 = +8%p, 0.06 = +6%p)
+        premium_rate: 기본 보정율 (0.08 = +8%p, 0.06 = +6%p)
+        long_term_premium: 장기 계약 추가 프리미엄 (48/60개월에만 적용)
 
     Returns:
         Dict: 고잔가 데이터
@@ -248,14 +254,28 @@ def _apply_premium_adjustment(self, normal_data: Dict, premium_rate: float) -> D
 
     for period, mileages in normal_data.items():
         premium_data[period] = {}
+
+        # 48/60개월에는 장기 계약 추가 프리미엄 적용
+        total_premium = premium_rate
+        if period in [48, 60] and long_term_premium > 0:
+            total_premium += long_term_premium
+
         for mileage, rate in mileages.items():
             # 최대 95%로 제한
-            premium_data[period][mileage] = round(min(0.95, rate + premium_rate), 4)
+            premium_data[period][mileage] = round(min(0.95, rate + total_premium), 4)
 
     return premium_data
 
 # 차량별 6개 옵션 생성
 residual_data = {}
+
+# 장기 계약 추가 프리미엄 계산 (48/60개월용)
+# P열: 고잔가추가 15,000, Q열: 고잔가추가1 10,000
+long_term_premium = 0.0
+if premium_add_15k and isinstance(premium_add_15k, (int, float)):
+    long_term_premium += float(premium_add_15k)
+if premium_add_10k and isinstance(premium_add_10k, (int, float)):
+    long_term_premium += float(premium_add_10k)
 
 # APS 등급
 if aps_grade:
@@ -264,7 +284,9 @@ if aps_grade:
     )
     if aps_normal:
         residual_data['aps_normal'] = aps_normal
-        residual_data['aps_premium'] = self._apply_premium_adjustment(aps_normal, 0.08)
+        residual_data['aps_premium'] = self._apply_premium_adjustment(
+            aps_normal, 0.08, long_term_premium
+        )
 
 # VGS 등급
 if vgs_grade:
@@ -273,18 +295,39 @@ if vgs_grade:
     )
     if vgs_normal:
         residual_data['vgs_normal'] = vgs_normal
-        residual_data['vgs_premium'] = self._apply_premium_adjustment(vgs_normal, 0.06)
+        residual_data['vgs_premium'] = self._apply_premium_adjustment(
+            vgs_normal, 0.06, long_term_premium
+        )
+```
+
+**차량별 프리미엄 적용 예시**:
+```python
+# BMW 520i: P=0.01, Q=0.01 → long_term_premium = 0.02
+# → 36개월: 일반잔가 + 8%p
+# → 48/60개월: 일반잔가 + 10%p (8% + 2%)
+
+# GLB 250: P=None, Q=None → long_term_premium = 0.0
+# → 모든 기간: 일반잔가 + 8%p
 ```
 
 **검증**:
 ```python
-# BMW X2 xDrive 20i M Mesh의 잔존율
+# BMW X2 xDrive 20i M Mesh의 잔존율 (36개월)
 {
   "aps_normal": {
     "36": {"20000": 0.55}   # 일반잔가
   },
   "aps_premium": {
     "36": {"20000": 0.63}   # 고잔가 = 0.55 + 0.08 ✅
+  }
+}
+
+# BMW 520i의 잔존율 (장기 계약 프리미엄 포함)
+{
+  "aps_premium": {
+    "36": {"20000": 0.715},  # 0.635 + 0.08 = 0.715 (36개월: 기본 프리미엄만)
+    "48": {"20000": 0.655},  # 0.555 + 0.08 + 0.02 = 0.655 (48개월: 기본+장기)
+    "60": {"20000": 0.595}   # 0.495 + 0.08 + 0.02 = 0.595 (60개월: 기본+장기) ✅
   }
 }
 ```
@@ -753,6 +796,8 @@ print("\n🎉 모든 검증 통과!")
   - [ ] K(11): AJ 등급
   - [ ] L(12): APS 등급
   - [ ] M(13): VGS 등급
+  - [ ] P(16): 고잔가추가 15,000 (장기 프리미엄) ⭐
+  - [ ] Q(17): 고잔가추가1 10,000 (장기 프리미엄) ⭐
   ```
 - [ ] 새로운 컬럼 추가 여부 확인
 
@@ -826,19 +871,33 @@ if kb_grade:
     residual_data['kb_premium'] = self._apply_premium_adjustment(kb_normal, 0.08)
 ```
 
-### 4. 고잔가 보정율 확인
+### 4. 고잔가 보정율 및 장기 프리미엄 확인
 
 엑셀에서 일반잔가와 고잔가를 비교하여 보정율 확인:
 
+**기본 보정율 (36개월 기준):**
 - [ ] APS 고잔가 = 일반잔가 + ? %p (현재: +8%p)
 - [ ] VGS 고잔가 = 일반잔가 + ? %p (현재: +6%p)
 - [ ] West 고잔가 = 일반잔가 + ? %p (현재: +8%p)
 
+**장기 계약 추가 프리미엄 (48/60개월):**
+- [ ] P열(고잔가추가 15,000) 확인 → 값이 있으면 해당 비율 추가
+- [ ] Q열(고잔가추가1 10,000) 확인 → 값이 있으면 해당 비율 추가
+- [ ] 특정 차량에만 장기 프리미엄 적용 여부 확인
+
 보정율 변경 시:
 ```python
 # meritz_extractor.py:_extract_vehicles_with_residuals()
+# P/Q열에서 장기 프리미엄 추출
+long_term_premium = 0.0
+if premium_add_15k:
+    long_term_premium += float(premium_add_15k)
+if premium_add_10k:
+    long_term_premium += float(premium_add_10k)
+
+# 기본 보정율 + 장기 프리미엄 적용
 residual_data['aps_premium'] = self._apply_premium_adjustment(
-    aps_normal, 0.08  # 변경된 보정율 적용
+    aps_normal, 0.08, long_term_premium
 )
 ```
 
@@ -967,5 +1026,10 @@ premium_rate = normal_rate + 0.08  # +8%p (percentage point)
 ---
 
 **작성일**: 2025-11-06
-**최종 검증**: BMW X2 xDrive 20i M Mesh (63% ✅)
+**최종 업데이트**: 2025-11-06 (장기 계약 프리미엄 추가)
+**최종 검증**:
+- BMW X2 xDrive 20i M Mesh: 36개월 63% ✅
+- BMW 520i: 48개월 65.5%, 60개월 59.5% ✅
+- GLB 250 4MATIC: 48개월 59.0%, 60개월 53.0% ✅
+
 **데이터 버전**: meritz_capital_2509_V1.xlsx
