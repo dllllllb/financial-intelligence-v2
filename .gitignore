@@ -48,3 +48,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Development files (not needed for deployment)
+xlsx/
+tools/
+excel_reverse_engineering/
