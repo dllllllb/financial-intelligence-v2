@@ -5,6 +5,7 @@ Streamlit 기반 운용리스 계산기 UI
 
 import streamlit as st
 from core.calculator import calculate_operating_lease, calculate_auto_tax
+from core.mg_calculator import MGLeaseCalculator
 from data import vehicle_master, residual_rates, interest_rates
 from core.validator import validate_lease_input, ValidationError
 
@@ -61,35 +62,49 @@ with st.sidebar:
         key="capital"
     )
 
-    # 잔가 옵션 선택
-    grade_option = st.selectbox(
-        "잔가 옵션",
-        options=['aps_premium', 'aps_normal', 'west_premium', 'west_normal', 'vgs_premium', 'vgs_normal'],
-        index=0,
-        format_func=lambda x: {
+    # 잔가 옵션 선택 (캐피탈별 다른 옵션)
+    if selected_capital == "mg_capital":
+        # MG Capital: SNK 옵션만
+        grade_options = ['snk_premium', 'snk_normal']
+        grade_option_display = {
+            'snk_premium': 'SNK 고잔가 (+8%)',
+            'snk_normal': 'SNK 일반잔가'
+        }
+        default_index = 0  # 고잔가 기본
+    else:
+        # Meritz Capital: APS/West/VGS 옵션
+        grade_options = ['aps_premium', 'aps_normal', 'west_premium', 'west_normal', 'vgs_premium', 'vgs_normal']
+        grade_option_display = {
             'aps_premium': 'APS 고잔가 (최대)',
             'aps_normal': 'APS 일반잔가',
             'west_premium': 'West 고잔가',
             'west_normal': 'West 일반잔가',
             'vgs_premium': 'VGS 고잔가',
             'vgs_normal': 'VGS 일반잔가'
-        }.get(x, x),
+        }
+        default_index = 0
+
+    grade_option = st.selectbox(
+        "잔가 옵션",
+        options=grade_options,
+        index=default_index,
+        format_func=lambda x: grade_option_display.get(x, x),
         key="grade_option"
     )
 
     # 1. 차량 선택
     st.subheader("1️⃣ 차량 선택")
 
-    # 1-1. 브랜드 선택
-    brands = vehicle_master.get_brands()
+    # 1-1. 브랜드 선택 (capital별)
+    brands = vehicle_master.get_brands(capital_id=selected_capital)
     selected_brand = st.selectbox(
         "브랜드",
         options=brands,
         key="brand"
     )
 
-    # 1-2. 기본 모델 선택
-    models = vehicle_master.get_models_by_brand(selected_brand)
+    # 1-2. 기본 모델 선택 (capital별)
+    models = vehicle_master.get_models_by_brand(selected_brand, capital_id=selected_capital)
 
     if not models:
         st.warning(f"⚠ {selected_brand}의 모델이 없습니다")
@@ -101,8 +116,8 @@ with st.sidebar:
         key="model"
     )
 
-    # 1-3. 세부 트림 선택
-    trims = vehicle_master.get_trims_by_brand_model(selected_brand, selected_model)
+    # 1-3. 세부 트림 선택 (capital별)
+    trims = vehicle_master.get_trims_by_brand_model(selected_brand, selected_model, capital_id=selected_capital)
 
     if not trims:
         st.warning(f"⚠ {selected_brand} {selected_model}의 트림이 없습니다")
@@ -121,7 +136,7 @@ with st.sidebar:
     )
 
     selected_vehicle_id = trim_options[selected_trim_display]
-    vehicle = vehicle_master.get_vehicle(selected_vehicle_id)
+    vehicle = vehicle_master.get_vehicle(selected_vehicle_id, capital_id=selected_capital)
 
     st.info(f"💰 선택한 차량: {vehicle['display_name']}")
     st.caption(f"   차량가: {vehicle['price']:,}원")
@@ -214,26 +229,74 @@ if calculate_button:
                 is_commercial=False  # 개인
             )
 
-            # 리스료 계산
-            # 과세표준 방식 (메리츠 엑셀과 동일)
-            taxable_base = vehicle['price'] / 1.1  # VAT 제외
-            acquisition_tax_rate = 0.07  # 개인 7%
-            acquisition_tax = taxable_base * acquisition_tax_rate
-            registration_fee = 100_000  # 등록비
-            acquisition_cost_total = vehicle['price'] + acquisition_tax + registration_fee
+            # 캐피탈별 계산 방식 선택
+            if selected_capital == "mg_capital":
+                # MG Capital: PMT 방식
+                mg_calc = MGLeaseCalculator()
 
-            result = calculate_operating_lease(
-                vehicle_price=vehicle['price'],
-                contract_months=contract_months,
-                down_payment=down_payment,
-                residual_rate=residual_rate,
-                annual_rate=annual_rate,
-                acquisition_tax_rate=0.0,  # 취득세는 이미 취득원가에 포함됨
-                registration_fee=registration_fee,
-                annual_car_tax=annual_car_tax,
-                method='simple',
-                acquisition_cost=acquisition_cost_total  # 하이브리드 방식
-            )
+                # 취득원가 먼저 계산 (down_payment_rate 계산용)
+                mg_acq_cost = mg_calc._calculate_acquisition_cost(
+                    vehicle_price=vehicle['price'],
+                    region="서울",
+                    is_ev=(vehicle['engine_cc'] == 0),
+                    is_hybrid=False,
+                    company_lease=False
+                )
+                down_payment_rate = down_payment / mg_acq_cost['total'] if down_payment > 0 else 0.0
+
+                mg_result = mg_calc.calculate(
+                    vehicle_price=vehicle['price'],
+                    residual_rate=residual_rate,
+                    contract_months=contract_months,
+                    annual_mileage=annual_mileage,
+                    annual_interest_rate=annual_rate,
+                    down_payment_rate=down_payment_rate,
+                    region="서울",
+                    is_ev=(vehicle['engine_cc'] == 0),
+                    is_hybrid=False
+                )
+
+                # MG 결과를 Meritz 형식으로 변환
+                result = {
+                    'monthly_total': mg_result['monthly_payment'],
+                    'monthly_depreciation': (mg_result['financed_amount'] - mg_result['residual_value']) // contract_months,
+                    'monthly_finance': mg_result['monthly_payment'] - ((mg_result['financed_amount'] - mg_result['residual_value']) // contract_months),
+                    'monthly_tax': 0,
+                    'monthly_registration': 0,
+                    'monthly_car_tax': mg_result['monthly_car_tax'],
+                    'total_payment': mg_result['total_payment'],
+                    'total_interest': mg_result['total_payment'] - mg_result['down_payment'] - mg_result['financed_amount'] + mg_result['residual_value'],
+                    'residual_value': mg_result['residual_value'],
+                    'effective_vehicle_cost': mg_result['net_vehicle_cost']
+                }
+
+                # MG는 취득원가 계산이 다름 (VAT 제외 방식)
+                taxable_base = vehicle['price'] / 1.1
+                acquisition_tax = mg_result['breakdown']['acquisition_tax']
+                registration_fee = 0  # MG는 0원
+                acquisition_cost_total = mg_result['acquisition_cost']
+
+            else:
+                # Meritz Capital: 정액법 방식
+                # 과세표준 방식 (메리츠 엑셀과 동일)
+                taxable_base = vehicle['price'] / 1.1  # VAT 제외
+                acquisition_tax_rate = 0.07  # 개인 7%
+                acquisition_tax = taxable_base * acquisition_tax_rate
+                registration_fee = 100_000  # 등록비
+                acquisition_cost_total = vehicle['price'] + acquisition_tax + registration_fee
+
+                result = calculate_operating_lease(
+                    vehicle_price=vehicle['price'],
+                    contract_months=contract_months,
+                    down_payment=down_payment,
+                    residual_rate=residual_rate,
+                    annual_rate=annual_rate,
+                    acquisition_tax_rate=0.0,  # 취득세는 이미 취득원가에 포함됨
+                    registration_fee=registration_fee,
+                    annual_car_tax=annual_car_tax,
+                    method='simple',
+                    acquisition_cost=acquisition_cost_total  # 하이브리드 방식
+                )
 
         except ValidationError as e:
             st.error(f"❌ 입력 오류: {str(e)}")

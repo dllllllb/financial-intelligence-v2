@@ -7,31 +7,44 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# 싱글톤 캐시
-_VEHICLE_CACHE: Optional[Dict] = None
+# 싱글톤 캐시 (capital별)
+_VEHICLE_CACHE: Dict[str, Dict] = {}
 
 
-def _load_vehicles() -> Dict:
-    """차량 데이터 로드 (캐싱)"""
-    global _VEHICLE_CACHE
+def _load_vehicles(capital_id: Optional[str] = None) -> Dict:
+    """
+    차량 데이터 로드 (캐싱)
 
-    if _VEHICLE_CACHE is None:
-        json_path = Path(__file__).parent / "vehicle_master.json"
+    Args:
+        capital_id: 캐피탈 ID (예: "mg_capital")
+                   None이면 기본 vehicle_master.json 로드
+    """
+    cache_key = capital_id or "default"
+
+    if cache_key not in _VEHICLE_CACHE:
+        if capital_id and capital_id.startswith("mg_"):
+            # MG Capital: mg_vehicle_master.json 사용
+            json_path = Path(__file__).parent / "mg_vehicle_master.json"
+        else:
+            # Default: vehicle_master.json 사용 (메리츠 등)
+            json_path = Path(__file__).parent / "vehicle_master.json"
+
         if not json_path.exists():
             raise FileNotFoundError(f"차량 마스터 파일이 없습니다: {json_path}")
 
         with open(json_path, 'r', encoding='utf-8') as f:
-            _VEHICLE_CACHE = json.load(f)
+            _VEHICLE_CACHE[cache_key] = json.load(f)
 
-    return _VEHICLE_CACHE
+    return _VEHICLE_CACHE[cache_key]
 
 
-def get_vehicle(vehicle_id: str) -> Dict:
+def get_vehicle(vehicle_id: str, capital_id: Optional[str] = None) -> Dict:
     """
     차량 상세 정보 조회
 
     Args:
         vehicle_id: 차량 ID (예: "AUDI_A3_A3_40_TFSI")
+        capital_id: 캐피탈 ID (None이면 기본)
 
     Returns:
         Dict: 차량 정보
@@ -39,7 +52,7 @@ def get_vehicle(vehicle_id: str) -> Dict:
     Raises:
         ValueError: 차량 ID를 찾을 수 없는 경우
     """
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
 
     if vehicle_id not in vehicles:
         raise ValueError(f"차량 ID를 찾을 수 없습니다: {vehicle_id}")
@@ -85,36 +98,37 @@ def get_vehicle_list(brand: Optional[str] = None,
     return result
 
 
-def get_all_vehicle_ids() -> List[str]:
+def get_all_vehicle_ids(capital_id: Optional[str] = None) -> List[str]:
     """전체 차량 ID 목록"""
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
     return list(vehicles.keys())
 
 
-def validate_vehicle_exists(vehicle_id: str) -> bool:
+def validate_vehicle_exists(vehicle_id: str, capital_id: Optional[str] = None) -> bool:
     """차량 존재 여부 확인"""
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
     return vehicle_id in vehicles
 
 
-def get_brands() -> List[str]:
+def get_brands(capital_id: Optional[str] = None) -> List[str]:
     """전체 브랜드 목록"""
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
     brands = set(v["brand"] for v in vehicles.values())
     return sorted(list(brands))
 
 
-def get_models_by_brand(brand: str) -> List[str]:
+def get_models_by_brand(brand: str, capital_id: Optional[str] = None) -> List[str]:
     """
     브랜드별 기본 모델 목록 조회
 
     Args:
         brand: 브랜드명 (예: "BMW", "Audi")
+        capital_id: 캐피탈 ID
 
     Returns:
         List[str]: 모델 목록 (중복 제거, 정렬)
     """
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
     models = set()
 
     for vehicle_data in vehicles.values():
@@ -124,18 +138,19 @@ def get_models_by_brand(brand: str) -> List[str]:
     return sorted(list(models))
 
 
-def get_trims_by_brand_model(brand: str, model: str) -> List[Dict]:
+def get_trims_by_brand_model(brand: str, model: str, capital_id: Optional[str] = None) -> List[Dict]:
     """
     브랜드와 모델로 세부 트림 목록 조회
 
     Args:
         brand: 브랜드명
         model: 모델명
+        capital_id: 캐피탈 ID
 
     Returns:
         List[Dict]: 트림 목록 [{"id": ..., "trim": ..., "price": ...}, ...]
     """
-    vehicles = _load_vehicles()
+    vehicles = _load_vehicles(capital_id)
     result = []
 
     for vehicle_id, vehicle_data in vehicles.items():
